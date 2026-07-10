@@ -1,36 +1,72 @@
-# ...existing code...
 FROM php:8.2-apache
 
-# System deps and PHP extensions commonly used with Composer + DB + Razorpay
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    git unzip libzip-dev zip libpng-dev libjpeg-dev libfreetype6-dev \
-    && docker-php-ext-configure gd --with-jpeg --with-freetype \
-    && docker-php-ext-install -j$(nproc) pdo pdo_mysql zip gd mbstring xml \
-    && apt-get clean && rm -rf /var/lib/apt/lists/*
+ENV DEBIAN_FRONTEND=noninteractive
 
+# Install system dependencies and PHP extensions
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    git \
+    unzip \
+    pkg-config \
+    zlib1g-dev \
+    libzip-dev \
+    libpng-dev \
+    libjpeg62-turbo-dev \
+    libfreetype6-dev \
+    libonig-dev \
+    libxml2-dev \
+    && docker-php-ext-configure gd --with-freetype --with-jpeg \
+    && docker-php-ext-install -j"$(nproc)" \
+        pdo \
+        pdo_mysql \
+        mysqli \
+        zip \
+        gd \
+        mbstring \
+        xml \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+# Enable Apache rewrite
 RUN a2enmod rewrite
 
 WORKDIR /var/www/html
 
-# Copy composer files first for caching
-COPY composer.json composer.lock* /var/www/html/
-# Install Composer and project dependencies
-RUN php -r "copy('https://getcomposer.org/installer', 'composer-setup.php');" \
-    && php composer-setup.php --install-dir=/usr/local/bin --filename=composer \
-    && php -r "unlink('composer-setup.php');" \
-    && composer install --no-interaction --prefer-dist --optimize-autoloader
+# Install Composer from the official Composer image
+COPY --from=composer:2 /usr/bin/composer /usr/local/bin/composer
 
-# Copy application code (including vendor/)
-COPY . /var/www/html
+# Copy Composer files first for Docker cache
+COPY composer.json composer.lock* ./
 
-# If your app uses a public/ folder, point DocumentRoot there (optional)
-RUN if [ -d /var/www/html/public ]; then \
-      sed -ri -e 's!/var/www/html!/var/www/html/public!g' /etc/apache2/sites-available/000-default.conf || true; \
+# Install dependencies
+RUN composer install \
+    --no-interaction \
+    --prefer-dist \
+    --optimize-autoloader \
+    --no-dev \
+    --no-scripts
+
+# Copy application files
+COPY . .
+
+# Run Composer scripts after application files exist
+RUN composer run-script post-install-cmd --no-interaction || true
+
+# Use public/ as Apache DocumentRoot if it exists
+RUN if [ -d "/var/www/html/public" ]; then \
+    sed -ri 's!/var/www/html!/var/www/html/public!g' \
+    /etc/apache2/sites-available/000-default.conf; \
     fi
 
-RUN chown -R www-data:www-data /var/www/html && chmod -R 755 /var/www/html
+# Allow .htaccess rules
+RUN printf '<Directory /var/www/html/>\nAllowOverride All\nRequire all granted\n</Directory>\n' \
+    > /etc/apache2/conf-available/app.conf \
+    && a2enconf app
+
+# Permissions
+RUN chown -R www-data:www-data /var/www/html \
+    && chmod -R 755 /var/www/html
 
 EXPOSE 80
 
 CMD ["apache2-foreground"]
-# ...existing code...
